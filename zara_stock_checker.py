@@ -42,11 +42,7 @@ PRODUCTOS_FILE = os.path.join(SCRIPT_DIR, "productos.json")
 
 # Cabeceras HTTP que imitan un navegador para evitar bloqueos
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36"
-    ),
+    "User-Agent": "ZaraApp/22.4.2 (iPhone; iOS 16.5; Scale/3.00)",
     "Accept": "text/html,application/xhtml+xml,application/json",
     "Accept-Language": "es-ES,es;q=0.9",
     "Referer": "https://www.zara.com/es/es/",
