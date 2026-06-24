@@ -261,17 +261,12 @@ def cmd_ayuda(chat_id):
     """Muestra los comandos disponibles."""
     texto = (
         "🤖 <b>Zara Stock Checker Bot</b>\n\n"
-        "Comandos disponibles:\n\n"
-        "/añadir <code>URL TALLA</code>\n"
-        "   Añadir un producto a monitorizar\n\n"
-        "/eliminar <code>NÚMERO</code>\n"
-        "   Eliminar un producto de la lista\n\n"
-        "/listar\n"
-        "   Ver todos los productos monitorizados\n\n"
-        "/estado\n"
-        "   Comprobar el stock ahora mismo\n\n"
-        "/ayuda\n"
-        "   Mostrar este mensaje\n\n"
+        "<b>Comandos disponibles:</b>\n"
+        "• /añadir <code>URL TALLA [SKU]</code>\n"
+        "• /listar — Ver tus productos\n"
+        "• /estado — Comprobar stock ahora\n"
+        "• /eliminar <code>NÚMERO</code>\n\n"
+        "💡 <b>Consejo:</b> Abre el producto de Zara en tu navegador, pulsa en tu marcador <i>'Obtener SKU Zara'</i> y copia el comando de tu talla listo para pegarlo aquí.\n\n"
         f"⏱ Intervalo de comprobación: cada {INTERVALO // 60} min"
     )
     enviar_telegram(texto, chat_id)

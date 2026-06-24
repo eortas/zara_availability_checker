@@ -253,7 +253,15 @@ def telegram_webhook():
         return "OK", 200
 
     if texto.startswith("/ayuda") or texto.startswith("/start"):
-        enviar_telegram("🤖 <b>Bot de Zara</b>\n\n/añadir URL TALLA [SKU_OPCIONAL]\n/eliminar NUMERO\n/listar\n/estado\n\n<i>Ejemplo simple: /añadir https://www.zara.com/... 40</i>")
+        enviar_telegram(
+            "🤖 <b>Bot de Zara</b>\n\n"
+            "<b>Comandos disponibles:</b>\n"
+            "• /añadir <code>URL TALLA [SKU]</code>\n"
+            "• /listar — Ver tus productos\n"
+            "• /estado — Comprobar stock ahora\n"
+            "• /eliminar <code>NÚMERO</code>\n\n"
+            "💡 <b>Consejo:</b> Abre el producto de Zara en tu navegador, pulsa en tu marcador <i>'Obtener SKU Zara'</i> y copia el comando de tu talla listo para pegarlo aquí."
+        )
         
     elif texto.startswith("/listar"):
         productos, _ = leer_csv_github()
