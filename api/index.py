@@ -4,6 +4,7 @@ import json
 import csv
 import io
 import base64
+import time
 import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -23,8 +24,14 @@ GITHUB_FILE_PATH = os.getenv("GITHUB_FILE_PATH", "productos.csv")
 STORE_ID = "10701" # Zara España
 
 HEADERS_ZARA = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Accept": "application/json",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/json",
+    "Accept-Language": "es-ES,es;q=0.9",
+    "Referer": "https://www.zara.com/es/es/",
 }
 
 # ==========================================
@@ -187,15 +194,33 @@ def obtener_mapa_tallas(url):
     return mapa
 
 def verificar_stock_api(product_id, sku):
-    url = f"https://www.zara.com/itxrest/1/catalog/store/{STORE_ID}/product/id/{product_id}/availability"
-    try:
-        resp = requests.get(url, headers=HEADERS_ZARA, timeout=10)
-        if resp.status_code == 200:
-            for item in resp.json().get("skusAvailability", []):
-                if str(item.get("sku")) == str(sku):
-                    return item.get("availability")
-    except Exception as e:
-        print(f"Error consultando Zara API: {e}")
+    """
+    Consulta la API interna de Zara para un SKU concreto.
+    Devuelve: "in_stock", "low_on_stock", "out_of_stock", o None si hay error.
+
+    Nota: la CDN de Zara a veces devuelve SKUs internos diferentes.
+    Se hacen hasta 3 intentos para mitigar esta inconsistencia.
+    """
+    url_api = (
+        f"https://www.zara.com/itxrest/1/catalog/store/{STORE_ID}"
+        f"/product/id/{product_id}/availability"
+    )
+
+    for intento in range(3):
+        try:
+            resp = requests.get(url_api, headers=HEADERS_ZARA, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for item in data.get("skusAvailability", []):
+                    if str(item.get("sku")) == str(sku):
+                        return item.get("availability", "unknown")
+        except Exception as e:
+            print(f"Error consultando Zara API (intento {intento+1}): {e}")
+
+        # Si no encontramos el SKU, esperar un poco y reintentar
+        if intento < 2:
+            time.sleep(1)
+
     return None
 
 # ==========================================
@@ -224,10 +249,12 @@ def cron_job():
             
         estado = verificar_stock_api(p["product_id"], p["sku"])
         
-        if estado == "in_stock":
+        if estado in ("in_stock", "low_on_stock"):
+            detalle = "¡EN STOCK!" if estado == "in_stock" else "POCAS UNIDADES"
             enviar_telegram(
                 f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
-                f"📦 {p['nombre']}\n\n"
+                f"📦 {p['nombre']}\n"
+                f"📊 Estado: {detalle}\n\n"
                 f"👉 <a href='{p['url']}'>Comprar ahora</a>"
             )
             p["notificado"] = "True"
@@ -323,8 +350,19 @@ def telegram_webhook():
                 return "OK", 200
                 
             productos, sha = leer_csv_github()
-            nuevo_id = str(len(productos) + 1)
             
+            # Comprobar si ya existe ese producto + talla
+            duplicado = False
+            for p in productos:
+                if p.get("product_id") == product_id and p.get("talla") == talla:
+                    duplicado = True
+                    break
+            
+            if duplicado:
+                enviar_telegram(f"⚠️ Ya estás monitorizando <b>{nombre}</b> en talla {talla}.")
+                return "OK", 200
+
+            nuevo_id = str(len(productos) + 1)
             nuevo_prod = {
                 "id": nuevo_id,
                 "nombre": nombre,
@@ -345,7 +383,16 @@ def telegram_webhook():
         lineas = ["📊 <b>Estado:</b>"]
         for p in productos:
             est = verificar_stock_api(p["product_id"], p["sku"])
-            icono = "🟢 En stock" if est == "in_stock" else "🔴 Agotada"
+            if est == "in_stock":
+                icono = "🟢 En stock"
+            elif est == "low_on_stock":
+                icono = "🟡 Pocas unidades"
+            elif est == "out_of_stock":
+                icono = "🔴 Agotada"
+            elif est is None:
+                icono = "⚠️ Error al consultar"
+            else:
+                icono = f"❓ Estado: {est}"
             lineas.append(f"📦 Talla {p['talla']}: {icono}")
         enviar_telegram("\n".join(lineas))
 

@@ -197,22 +197,33 @@ def obtener_mapa_tallas(url):
 def verificar_stock_api(product_id, sku):
     """
     Consulta la API interna de Zara para un SKU concreto.
-    Devuelve: "in_stock", "out_of_stock", o None si hay error.
+    Devuelve: "in_stock", "low_on_stock", "out_of_stock", o None si hay error.
+
+    Nota: la CDN de Zara a veces devuelve SKUs internos diferentes.
+    Se hacen hasta 3 intentos para mitigar esta inconsistencia.
     """
     url_api = (
         f"https://www.zara.com/itxrest/1/catalog/store/{STORE_ID}"
         f"/product/id/{product_id}/availability"
     )
-    try:
-        resp = requests.get(url_api, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, json.JSONDecodeError):
-        return None
 
-    for item in data.get("skusAvailability", []):
-        if str(item.get("sku")) == str(sku):
-            return item.get("availability", "unknown")
+    # Intentar hasta 3 veces por si la CDN devuelve SKUs internos distintos
+    for intento in range(3):
+        try:
+            resp = requests.get(url_api, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, json.JSONDecodeError):
+            return None
+
+        for item in data.get("skusAvailability", []):
+            if str(item.get("sku")) == str(sku):
+                return item.get("availability", "unknown")
+
+        # Si no encontramos el SKU, esperar un poco y reintentar
+        # (la CDN puede haber devuelto SKUs internos diferentes)
+        if intento < 2:
+            time.sleep(1)
 
     return None
 
@@ -275,23 +286,27 @@ def cmd_ayuda(chat_id):
 def cmd_añadir(chat_id, argumentos):
     """
     Añade un producto nuevo a la lista.
-    Uso: /añadir https://www.zara.com/es/es/...html?v1=XXXXX 42
+    Uso: /añadir URL TALLA [SKU]
+    El SKU es opcional; si no se da, se intenta descubrir automáticamente.
     """
-    # Separar la URL y la talla de los argumentos
+    # Separar la URL, talla y SKU opcional de los argumentos
     partes = argumentos.strip().split()
     if len(partes) < 2:
         enviar_telegram(
             "⚠️ <b>Formato incorrecto</b>\n\n"
-            "Uso: /añadir <code>URL TALLA</code>\n\n"
+            "Uso: /añadir <code>URL TALLA [SKU]</code>\n\n"
             "Ejemplo:\n"
             "<code>/añadir https://www.zara.com/es/es/"
-            "zueco-piel-hebilla-p12721620.html?v1=495716335 42</code>",
+            "zueco-piel-hebilla-p12721620.html?v1=495716335 42</code>\n\n"
+            "💡 Si tienes el SKU del bookmarklet, pégalo al final:\n"
+            "<code>/añadir URL S 528564799</code>",
             chat_id,
         )
         return
 
     url = partes[0]
     talla = partes[1]
+    sku_manual = partes[2] if len(partes) >= 3 else None
 
     # Validar que la URL es de Zara
     if "zara.com" not in url:
@@ -313,19 +328,23 @@ def cmd_añadir(chat_id, argumentos):
     # Extraer el nombre del producto desde la URL
     nombre = extraer_nombre_url(url)
 
-    # Intentar descubrir el SKU de la talla
-    mapa_tallas = obtener_mapa_tallas(url)
-    sku = mapa_tallas.get(talla)
+    # Determinar el SKU: prioridad al SKU manual del bookmarklet
+    if sku_manual:
+        sku = sku_manual
+    else:
+        # Intentar descubrir el SKU de la talla desde el HTML
+        mapa_tallas = obtener_mapa_tallas(url)
+        sku = mapa_tallas.get(talla)
 
-    if not sku and mapa_tallas:
-        # La talla no existe pero tenemos el mapa
-        tallas_str = ", ".join(sorted(mapa_tallas.keys()))
-        enviar_telegram(
-            f"❌ La talla <b>{talla}</b> no existe para este producto.\n\n"
-            f"Tallas disponibles: {tallas_str}",
-            chat_id,
-        )
-        return
+        if not sku and mapa_tallas:
+            # La talla no existe pero tenemos el mapa
+            tallas_str = ", ".join(sorted(mapa_tallas.keys()))
+            enviar_telegram(
+                f"❌ La talla <b>{talla}</b> no existe para este producto.\n\n"
+                f"Tallas disponibles: {tallas_str}",
+                chat_id,
+            )
+            return
 
     # Crear el registro del producto
     productos = cargar_productos()
@@ -353,11 +372,12 @@ def cmd_añadir(chat_id, argumentos):
 
     # Confirmar al usuario
     if sku:
+        origen = "bookmarklet" if sku_manual else "auto"
         enviar_telegram(
             f"✅ <b>Producto añadido</b>\n\n"
             f"📦 {nombre}\n"
             f"👟 Talla: {talla}\n"
-            f"🔑 SKU: {sku}\n\n"
+            f"🔑 SKU: {sku} ({origen})\n\n"
             f"Se comprobará cada {INTERVALO // 60} minutos.",
             chat_id,
         )
@@ -489,10 +509,14 @@ def cmd_estado(chat_id):
         estado = verificar_stock_api(p["product_id"], p["sku"])
         if estado == "in_stock":
             icono = "🟢 En stock"
+        elif estado == "low_on_stock":
+            icono = "🟡 Pocas unidades"
         elif estado == "out_of_stock":
             icono = "🔴 Agotada"
-        else:
+        elif estado is None:
             icono = "⚠️ Error al consultar"
+        else:
+            icono = f"❓ Estado: {estado}"
 
         lineas.append(f"{i}️⃣ {p['nombre']} ({p['talla']}): {icono}")
 
@@ -572,11 +596,14 @@ def bucle_verificacion():
 
             estado = verificar_stock_api(p["product_id"], p["sku"])
 
-            if estado == "in_stock":
-                print(f"    🟢 {p['nombre']} ({p['talla']}): ¡EN STOCK!")
+            if estado in ("in_stock", "low_on_stock"):
+                emoji = "🟢" if estado == "in_stock" else "🟡"
+                detalle = "¡EN STOCK!" if estado == "in_stock" else "POCAS UNIDADES"
+                print(f"    {emoji} {p['nombre']} ({p['talla']}): {detalle}")
                 enviar_telegram(
                     f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
-                    f"📦 {p['nombre']}\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"📊 Estado: {detalle}\n\n"
                     f"👉 <a href='{p['url']}'>Comprar ahora</a>",
                 )
                 p["notificado"] = True
