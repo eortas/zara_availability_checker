@@ -389,7 +389,7 @@ def telegram_webhook():
                 icono = "⚠️ Error al consultar"
             else:
                 icono = f"❓ Estado: {est}"
-            lineas.append(f"📦 Talla {p['talla']}: {icono}")
+            lineas.append(f"📦 <b>{p['nombre']}</b> (Talla {p['talla']}): {icono}")
         enviar_telegram("\n".join(lineas))
 
     return "OK", 200
