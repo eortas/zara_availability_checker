@@ -55,8 +55,7 @@ Si sale `"ok": true`, ¡el bot ya te escuchará!
 Abre el chat con tu bot y usa los siguientes comandos:
 
 - `/añadir [URL] [TALLA]` — Añade un producto (el bot buscará el SKU automáticamente, ej: `/añadir https://... 40`)
-- `/listar` — Muestra los productos vigilados.
-- `/estado` — Comprueba si hay stock manualmente.
+- `/listar` — Muestra los productos vigilados y comprueba su stock en tiempo real.
 - `/eliminar [NÚMERO]` — Borra un producto.
 - `/ayuda` — Muestra información básica.
 

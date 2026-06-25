@@ -270,8 +270,7 @@ def cmd_ayuda(chat_id):
         "🤖 <b>Zara Stock Checker Bot</b>\n\n"
         "<b>Comandos disponibles:</b>\n"
         "• /añadir <code>URL TALLA [SKU]</code>\n"
-        "• /listar — Ver tus productos\n"
-        "• /estado — Comprobar stock ahora\n"
+        "• /listar — Ver tus productos y comprobar su stock en tiempo real\n"
         "• /eliminar <code>NÚMERO</code>\n\n"
         "💡 <b>Consejo:</b> Abre el producto de Zara en tu navegador, pulsa en tu marcador <i>'Obtener SKU Zara'</i> y copia el comando de tu talla listo para pegarlo aquí.\n\n"
         f"⏱ Intervalo de comprobación: cada {INTERVALO // 60} min"
@@ -361,7 +360,7 @@ def cmd_añadir(chat_id, argumentos):
         "talla": talla,
         "product_id": product_id,
         "sku": sku,       # Puede ser None si no se pudo descubrir
-        "notificado": False,
+        "ultimo_estado": None,
     }
     productos.append(nuevo)
     guardar_productos(productos)
@@ -419,7 +418,9 @@ def cmd_sku(chat_id, argumentos):
         return
 
     productos[indice]["sku"] = nuevo_sku
-    productos[indice]["notificado"] = False
+    productos[indice]["ultimo_estado"] = None
+    if "notificado" in productos[indice]:
+        del productos[indice]["notificado"]
     guardar_productos(productos)
 
     p = productos[indice]
@@ -461,7 +462,7 @@ def cmd_eliminar(chat_id, argumentos):
 
 
 def cmd_listar(chat_id):
-    """Muestra todos los productos monitorizados."""
+    """Muestra todos los productos monitorizados con comprobación en tiempo real."""
     productos = cargar_productos()
     if not productos:
         enviar_telegram(
@@ -471,50 +472,44 @@ def cmd_listar(chat_id):
         )
         return
 
+    enviar_telegram("🔍 Consultando disponibilidad en tiempo real...", chat_id)
+
+    hubo_cambios = False
     lineas = [f"📋 <b>Productos monitorizados ({len(productos)}):</b>\n"]
     for i, p in enumerate(productos, 1):
         sku_info = f"SKU: {p['sku']}" if p.get("sku") else "⚠️ Sin SKU"
-        estado = "🔔 Notificado" if p.get("notificado") else "👀 Vigilando"
-        lineas.append(
-            f"{i}️⃣ <b>{p['nombre']}</b>\n"
-            f"   Talla: {p['talla']} | {sku_info}\n"
-            f"   {estado}\n"
-        )
+        
+        if p.get("sku"):
+            estado = verificar_stock_api(p["product_id"], p["sku"])
+            if estado is not None:
+                p["ultimo_estado"] = estado
+                hubo_cambios = True
+            else:
+                # Si falla la API, intentamos usar el último guardado
+                estado = p.get("ultimo_estado")
+        else:
+            estado = None
 
-    enviar_telegram("\n".join(lineas), chat_id)
-
-
-def cmd_estado(chat_id):
-    """Comprueba el stock de todos los productos y muestra el resultado."""
-    productos = cargar_productos()
-    if not productos:
-        enviar_telegram("📋 No hay productos para comprobar.", chat_id)
-        return
-
-    enviar_telegram("🔍 Comprobando stock...", chat_id)
-
-    lineas = ["📊 <b>Estado actual:</b>\n"]
-    for i, p in enumerate(productos, 1):
-        if not p.get("sku"):
-            lineas.append(
-                f"{i}️⃣ {p['nombre']} ({p['talla']}): "
-                f"⚠️ Sin SKU asignado"
-            )
-            continue
-
-        estado = verificar_stock_api(p["product_id"], p["sku"])
         if estado == "in_stock":
             icono = "🟢 En stock"
         elif estado == "low_on_stock":
             icono = "🟡 Pocas unidades"
         elif estado == "out_of_stock":
             icono = "🔴 Agotada"
-        elif estado is None:
-            icono = "⚠️ Error al consultar"
+        elif estado is None and not p.get("sku"):
+            icono = "⚠️ Sin SKU asignado"
         else:
-            icono = f"❓ Estado: {estado}"
+            icono = f"⚠️ Error al consultar (último conocido: {p.get('ultimo_estado') or 'desconocido'})"
 
-        lineas.append(f"{i}️⃣ {p['nombre']} ({p['talla']}): {icono}")
+        lineas.append(
+            f"{i}️⃣ <b>{p['nombre']}</b>\n"
+            f"   Talla: {p['talla']} | {sku_info}\n"
+            f"   Estado: {icono}\n"
+        )
+        time.sleep(0.5)  # Pausa mínima para no saturar
+
+    if hubo_cambios:
+        guardar_productos(productos)
 
     enviar_telegram("\n".join(lineas), chat_id)
 
@@ -548,10 +543,8 @@ def procesar_mensaje(update):
         cmd_añadir(chat_id, argumentos)
     elif comando in ("/eliminar", "/delete", "/del"):
         cmd_eliminar(chat_id, argumentos)
-    elif comando in ("/listar", "/list"):
+    elif comando in ("/listar", "/list", "/estado", "/status", "/check"):
         cmd_listar(chat_id)
-    elif comando in ("/estado", "/status", "/check"):
-        cmd_estado(chat_id)
     elif comando == "/sku":
         cmd_sku(chat_id, argumentos)
     else:
@@ -570,7 +563,7 @@ def bucle_verificacion():
     """
     Se ejecuta en un hilo en segundo plano.
     Cada INTERVALO segundos comprueba el stock de todos los productos.
-    Envía una notificación por Telegram si alguno pasa a 'in_stock'.
+    Envía una notificación por Telegram si cambian de estado de stock o se agotan.
     """
     print(f"🔄 Verificación de stock activa (cada {INTERVALO}s)\n")
 
@@ -586,28 +579,86 @@ def bucle_verificacion():
 
         hubo_cambios = False
         for p in productos:
-            # Si no tiene SKU o ya fue notificado, saltar
-            if not p.get("sku") or p.get("notificado"):
+            if not p.get("sku"):
                 continue
 
-            estado = verificar_stock_api(p["product_id"], p["sku"])
+            estado_actual = verificar_stock_api(p["product_id"], p["sku"])
+            if estado_actual is None:
+                print(f"    ⚠️ {p['nombre']} ({p['talla']}): error al consultar API")
+                continue
 
-            if estado in ("in_stock", "low_on_stock"):
-                emoji = "🟢" if estado == "in_stock" else "🟡"
-                detalle = "¡EN STOCK!" if estado == "in_stock" else "POCAS UNIDADES"
-                print(f"    {emoji} {p['nombre']} ({p['talla']}): {detalle}")
-                enviar_telegram(
-                    f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
-                    f"📦 {p['nombre']}\n"
-                    f"📊 Estado: {detalle}\n\n"
-                    f"👉 <a href='{p['url']}'>Comprar ahora</a>",
-                )
-                p["notificado"] = True
+            # Compatibilidad: migrar y limpiar el antiguo 'notificado' si existiera
+            ultimo_estado = p.get("ultimo_estado")
+            if ultimo_estado is None and p.get("notificado") is True:
+                ultimo_estado = "in_stock"
+            
+            # Limpiar clave 'notificado' obsoleta si existe
+            if "notificado" in p:
+                del p["notificado"]
                 hubo_cambios = True
-            elif estado == "out_of_stock":
-                print(f"    🔴 {p['nombre']} ({p['talla']}): agotada")
+
+            # Si el estado actual es igual al último estado guardado, no hay cambios relevantes
+            if estado_actual == ultimo_estado:
+                # Mostrar en consola de depuración
+                emoji = "🟢" if estado_actual == "in_stock" else ("🟡" if estado_actual == "low_on_stock" else "🔴")
+                print(f"    {emoji} {p['nombre']} ({p['talla']}): sin cambios ({estado_actual})")
+                time.sleep(1)
+                continue
+
+            # Si es la primera comprobación (ambos None)
+            if ultimo_estado is None:
+                if estado_actual in ("in_stock", "low_on_stock"):
+                    emoji = "🟢" if estado_actual == "in_stock" else "🟡"
+                    detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
+                    print(f"    {emoji} {p['nombre']} ({p['talla']}): {detalle} (Inicial)")
+                    enviar_telegram(
+                        f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
+                        f"📦 {p['nombre']}\n"
+                        f"📊 Estado: {detalle} {emoji}\n\n"
+                        f"👉 <a href='{p['url']}'>Comprar ahora</a>",
+                    )
+                else:
+                    print(f"    🔴 {p['nombre']} ({p['talla']}): Agotado (Inicial)")
+                
+                p["ultimo_estado"] = estado_actual
+                hubo_cambios = True
+
             else:
-                print(f"    ⚠️ {p['nombre']} ({p['talla']}): error")
+                # Transiciones de estado significativas:
+                # 1. De agotado (o desconocido) a disponible (in_stock o low_on_stock)
+                if ultimo_estado == "out_of_stock" and estado_actual in ("in_stock", "low_on_stock"):
+                    emoji = "🟢" if estado_actual == "in_stock" else "🟡"
+                    detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
+                    print(f"    {emoji} {p['nombre']} ({p['talla']}): vuelve a estar disponible")
+                    enviar_telegram(
+                        f"🎉 <b>¡VUELVE A HABER STOCK! (Talla {p['talla']})</b>\n\n"
+                        f"📦 {p['nombre']}\n"
+                        f"📊 Estado: {detalle} {emoji}\n\n"
+                        f"👉 <a href='{p['url']}'>Comprar ahora</a>",
+                    )
+
+                # 2. De tener stock completo a tener pocas unidades (bajada de stock)
+                elif ultimo_estado == "in_stock" and estado_actual == "low_on_stock":
+                    print(f"    🟡 {p['nombre']} ({p['talla']}): pocas unidades (bajada de stock)")
+                    enviar_telegram(
+                        f"⚠️ <b>¡ÚLTIMAS UNIDADES! (Talla {p['talla']})</b>\n\n"
+                        f"📦 {p['nombre']}\n"
+                        f"📊 Estado: Quedan pocas unidades 🟡\n\n"
+                        f"👉 <a href='{p['url']}'>Comprar ahora</a>",
+                    )
+
+                # 3. Pasa a estar agotado (estaba en in_stock o low_on_stock y ahora no hay nada)
+                elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
+                    print(f"    🔴 {p['nombre']} ({p['talla']}): se ha agotado")
+                    enviar_telegram(
+                        f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
+                        f"📦 {p['nombre']}\n"
+                        f"El producto se ha agotado. El bot seguirá vigilando por si vuelve a estar disponible.",
+                    )
+                
+                # Para cualquier otra transición no contemplada o cambios ordinarios:
+                p["ultimo_estado"] = estado_actual
+                hubo_cambios = True
 
             # Pequeña pausa entre productos para no saturar la API
             time.sleep(1)

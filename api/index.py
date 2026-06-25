@@ -73,9 +73,9 @@ def guardar_csv_github(productos, sha_actual):
     }
     
     # Si la lista está vacía, creamos un CSV solo con cabeceras
-    campos = ["id", "nombre", "url", "talla", "product_id", "sku", "notificado"]
+    campos = ["id", "nombre", "url", "talla", "product_id", "sku", "notificado", "ultimo_estado"]
     f = io.StringIO()
-    escritor = csv.DictWriter(f, fieldnames=campos)
+    escritor = csv.DictWriter(f, fieldnames=campos, extrasaction='ignore')
     escritor.writeheader()
     for p in productos:
         escritor.writerow(p)
@@ -240,25 +240,69 @@ def cron_job():
     hubo_cambios = False
     
     for p in productos:
-        if not p.get("sku") or p.get("notificado") == "True":
+        if not p.get("sku"):
             continue
             
-        estado = verificar_stock_api(p["product_id"], p["sku"])
+        estado_actual = verificar_stock_api(p["product_id"], p["sku"])
+        if estado_actual is None:
+            continue
+            
+        # Compatibilidad: obtener ultimo_estado o migrar desde notificado
+        ultimo_estado = p.get("ultimo_estado")
+        if not ultimo_estado:
+            if p.get("notificado") == "True":
+                ultimo_estado = "in_stock"
+            else:
+                ultimo_estado = None
+
+        # Mantener valor por compatibilidad
+        p["notificado"] = "False"
         
-        if estado in ("in_stock", "low_on_stock"):
-            detalle = "¡EN STOCK!" if estado == "in_stock" else "POCAS UNIDADES"
-            enviar_telegram(
-                f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
-                f"📦 {p['nombre']}\n"
-                f"📊 Estado: {detalle}\n\n"
-                f"👉 <a href='{p['url']}'>Comprar ahora</a>"
-            )
-            p["notificado"] = "True"
+        # Si el estado actual es el mismo que el anterior, continuar
+        if estado_actual == ultimo_estado:
+            continue
+
+        if ultimo_estado is None:
+            # Inicialización
+            if estado_actual in ("in_stock", "low_on_stock"):
+                emoji = "🟢" if estado_actual == "in_stock" else "🟡"
+                detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
+                enviar_telegram(
+                    f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"📊 Estado: {detalle} {emoji}\n\n"
+                    f"👉 <a href='{p['url']}'>Comprar ahora</a>"
+                )
+            p["ultimo_estado"] = estado_actual
+            hubo_cambios = True
+        else:
+            # Transiciones
+            if ultimo_estado == "out_of_stock" and estado_actual in ("in_stock", "low_on_stock"):
+                emoji = "🟢" if estado_actual == "in_stock" else "🟡"
+                detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
+                enviar_telegram(
+                    f"🎉 <b>¡VUELVE A HABER STOCK! (Talla {p['talla']})</b>\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"📊 Estado: {detalle} {emoji}\n\n"
+                    f"👉 <a href='{p['url']}'>Comprar ahora</a>"
+                )
+            elif ultimo_estado == "in_stock" and estado_actual == "low_on_stock":
+                enviar_telegram(
+                    f"⚠️ <b>¡ÚLTIMAS UNIDADES! (Talla {p['talla']})</b>\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"📊 Estado: Quedan pocas unidades 🟡\n\n"
+                    f"👉 <a href='{p['url']}'>Comprar ahora</a>"
+                )
+            elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
+                enviar_telegram(
+                    f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"El producto se ha agotado. El bot seguirá vigilando por si vuelve a estar disponible."
+                )
+            
+            p["ultimo_estado"] = estado_actual
             hubo_cambios = True
 
-    if hubo_cambios:
-        guardar_csv_github(productos, sha)
-        
     return jsonify({"mensaje": "Comprobación completada", "cambios": hubo_cambios})
 
 @app.route("/api/webhook", methods=["POST"])
@@ -280,21 +324,47 @@ def telegram_webhook():
             "🤖 <b>Bot de Zara</b>\n\n"
             "<b>Comandos disponibles:</b>\n"
             "• /añadir <code>URL TALLA [SKU]</code>\n"
-            "• /listar — Ver tus productos\n"
-            "• /estado — Comprobar stock ahora\n"
+            "• /listar — Ver tus productos y comprobar stock en tiempo real\n"
             "• /eliminar <code>NÚMERO</code>\n\n"
             "💡 <b>Consejo:</b> Abre el producto de Zara en tu navegador, pulsa en tu marcador <i>'Obtener SKU Zara'</i> y copia el comando de tu talla listo para pegarlo aquí."
         )
         
-    elif texto.startswith("/listar"):
-        productos, _ = leer_csv_github()
+    elif any(texto.startswith(cmd) for cmd in ("/listar", "/list", "/estado", "/status", "/check")):
+        productos, sha = leer_csv_github()
         if not productos:
             enviar_telegram("📋 No hay productos.")
         else:
-            lineas = []
+            enviar_telegram("🔍 Consultando disponibilidad en tiempo real...")
+            lineas = ["📋 <b>Productos monitorizados:</b>\n"]
+            hubo_cambios = False
             for i, p in enumerate(productos, 1):
-                estado = "🔔 Notificado" if p.get("notificado") == "True" else "👀 Vigilando"
-                lineas.append(f"{i}️⃣ <b>{p['nombre']}</b> (Talla {p['talla']}) - {estado}")
+                sku_info = f"SKU: {p['sku']}" if p.get("sku") else "⚠️ Sin SKU"
+                if p.get("sku"):
+                    est = verificar_stock_api(p["product_id"], p["sku"])
+                    if est is not None:
+                        p["ultimo_estado"] = est
+                        hubo_cambios = True
+                    else:
+                        est = p.get("ultimo_estado")
+                else:
+                    est = None
+
+                if est == "in_stock":
+                    icono = "🟢 En stock"
+                elif est == "low_on_stock":
+                    icono = "🟡 Pocas unidades"
+                elif est == "out_of_stock":
+                    icono = "🔴 Agotada"
+                elif est is None and not p.get("sku"):
+                    icono = "⚠️ Sin SKU asignado"
+                else:
+                    icono = f"⚠️ Error al consultar (último conocido: {p.get('ultimo_estado') or 'desconocido'})"
+                    
+                lineas.append(f"{i}️⃣ <b>{p['nombre']}</b> (Talla {p['talla']})\n   {icono}")
+                time.sleep(0.5)
+                
+            if hubo_cambios:
+                guardar_csv_github(productos, sha)
             enviar_telegram("\n".join(lineas))
             
     elif texto.startswith("/eliminar"):
@@ -357,7 +427,7 @@ def telegram_webhook():
             if duplicado:
                 enviar_telegram(f"⚠️ Ya estás monitorizando <b>{nombre}</b> en talla {talla}.")
                 return "OK", 200
-
+ 
             nuevo_id = str(len(productos) + 1)
             nuevo_prod = {
                 "id": nuevo_id,
@@ -366,31 +436,14 @@ def telegram_webhook():
                 "talla": talla,
                 "product_id": product_id,
                 "sku": sku,
-                "notificado": "False"
+                "notificado": "False",
+                "ultimo_estado": ""
             }
             productos.append(nuevo_prod)
             guardar_csv_github(productos, sha)
             enviar_telegram(f"✅ <b>¡Producto añadido!</b>\n📦 {nombre}\n📏 Talla: {talla}\n🔑 SKU: {sku}")
         else:
             enviar_telegram("⚠️ Uso: /añadir URL TALLA\nEjemplo: /añadir https://www.zara.com/... 40")
-            
-    elif texto.startswith("/estado"):
-        productos, _ = leer_csv_github()
-        lineas = ["📊 <b>Estado:</b>"]
-        for p in productos:
-            est = verificar_stock_api(p["product_id"], p["sku"])
-            if est == "in_stock":
-                icono = "🟢 En stock"
-            elif est == "low_on_stock":
-                icono = "🟡 Pocas unidades"
-            elif est == "out_of_stock":
-                icono = "🔴 Agotada"
-            elif est is None:
-                icono = "⚠️ Error al consultar"
-            else:
-                icono = f"❓ Estado: {est}"
-            lineas.append(f"📦 <b>{p['nombre']}</b> (Talla {p['talla']}): {icono}")
-        enviar_telegram("\n".join(lineas))
 
     return "OK", 200
 
