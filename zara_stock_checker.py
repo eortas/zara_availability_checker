@@ -640,21 +640,10 @@ def bucle_verificacion():
                 # 2. De tener stock completo a tener pocas unidades (bajada de stock)
                 elif ultimo_estado == "in_stock" and estado_actual == "low_on_stock":
                     print(f"    🟡 {p['nombre']} ({p['talla']}): pocas unidades (bajada de stock)")
-                    enviar_telegram(
-                        f"⚠️ <b>¡ÚLTIMAS UNIDADES! (Talla {p['talla']})</b>\n\n"
-                        f"📦 {p['nombre']}\n"
-                        f"📊 Estado: Quedan pocas unidades 🟡\n\n"
-                        f"👉 <a href='{p['url']}'>Comprar ahora</a>",
-                    )
 
                 # 3. Pasa a estar agotado (estaba en in_stock o low_on_stock y ahora no hay nada)
                 elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
                     print(f"    🔴 {p['nombre']} ({p['talla']}): se ha agotado")
-                    enviar_telegram(
-                        f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
-                        f"📦 {p['nombre']}\n"
-                        f"El producto se ha agotado. El bot seguirá vigilando por si vuelve a estar disponible.",
-                    )
                 
                 # Para cualquier otra transición no contemplada o cambios ordinarios:
                 p["ultimo_estado"] = estado_actual
