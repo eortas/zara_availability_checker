@@ -287,6 +287,12 @@ def cron_job():
                     f"📊 Estado: {detalle} {emoji}\n\n"
                     f"👉 <a href='{p['url']}'>Comprar ahora</a>"
                 )
+            elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
+                mensajes_a_enviar.append(
+                    f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
+                    f"📦 {p['nombre']}\n"
+                    f"El producto se ha agotado. El bot seguirá vigilando por si vuelve a estar disponible."
+                )
             
             p["ultimo_estado"] = estado_actual
             hubo_cambios = True
