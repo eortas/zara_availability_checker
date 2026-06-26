@@ -286,13 +286,6 @@ def cron_job():
                     f"📊 Estado: {detalle} {emoji}\n\n"
                     f"👉 <a href='{p['url']}'>Comprar ahora</a>"
                 )
-            elif ultimo_estado == "in_stock" and estado_actual == "low_on_stock":
-                enviar_telegram(
-                    f"⚠️ <b>¡ÚLTIMAS UNIDADES! (Talla {p['talla']})</b>\n\n"
-                    f"📦 {p['nombre']}\n"
-                    f"📊 Estado: Quedan pocas unidades 🟡\n\n"
-                    f"👉 <a href='{p['url']}'>Comprar ahora</a>"
-                )
             elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
                 enviar_telegram(
                     f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
