@@ -238,6 +238,7 @@ def cron_job():
         return jsonify({"mensaje": "No hay productos para comprobar"})
 
     hubo_cambios = False
+    mensajes_a_enviar = []
     
     for p in productos:
         if not p.get("sku"):
@@ -267,7 +268,7 @@ def cron_job():
             if estado_actual in ("in_stock", "low_on_stock"):
                 emoji = "🟢" if estado_actual == "in_stock" else "🟡"
                 detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
-                enviar_telegram(
+                mensajes_a_enviar.append(
                     f"🎉 <b>¡TALLA {p['talla']} DISPONIBLE!</b>\n\n"
                     f"📦 {p['nombre']}\n"
                     f"📊 Estado: {detalle} {emoji}\n\n"
@@ -280,14 +281,14 @@ def cron_job():
             if ultimo_estado == "out_of_stock" and estado_actual in ("in_stock", "low_on_stock"):
                 emoji = "🟢" if estado_actual == "in_stock" else "🟡"
                 detalle = "¡EN STOCK!" if estado_actual == "in_stock" else "POCAS UNIDADES"
-                enviar_telegram(
+                mensajes_a_enviar.append(
                     f"🎉 <b>¡VUELVE A HABER STOCK! (Talla {p['talla']})</b>\n\n"
                     f"📦 {p['nombre']}\n"
                     f"📊 Estado: {detalle} {emoji}\n\n"
                     f"👉 <a href='{p['url']}'>Comprar ahora</a>"
                 )
             elif ultimo_estado in ("in_stock", "low_on_stock") and estado_actual == "out_of_stock":
-                enviar_telegram(
+                mensajes_a_enviar.append(
                     f"🔴 <b>PRODUCTO AGOTADO (Talla {p['talla']})</b>\n\n"
                     f"📦 {p['nombre']}\n"
                     f"El producto se ha agotado. El bot seguirá vigilando por si vuelve a estar disponible."
@@ -295,6 +296,14 @@ def cron_job():
             
             p["ultimo_estado"] = estado_actual
             hubo_cambios = True
+
+    if hubo_cambios:
+        guardado_ok = guardar_csv_github(productos, sha)
+        if guardado_ok:
+            for msg in mensajes_a_enviar:
+                enviar_telegram(msg)
+        else:
+            return jsonify({"error": "Error al guardar el estado en GitHub. Notificaciones pospuestas."}), 500
 
     return jsonify({"mensaje": "Comprobación completada", "cambios": hubo_cambios})
 
