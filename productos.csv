@@ -1,2 +1,2 @@
 id,nombre,url,talla,product_id,sku,notificado,ultimo_estado
-1,ZUECO PIEL HEBILLA,https://www.zara.com/es/es/zueco-piel-hebilla-p12721620.html?v1=495716335,42,495716335,495712891,False,low_on_stock
+1,ZUECO PIEL HEBILLA,https://www.zara.com/es/es/zueco-piel-hebilla-p12721620.html?v1=495716335,42,495716335,495712891,False,out_of_stock
